@@ -6,6 +6,7 @@ CloudFlare 扫描器 （简称CFS)
 <img width="432" height="503" alt="cfs" src="https://github.com/user-attachments/assets/eed59f02-f373-4218-84f3-70d35390fbb7" />
 
 
+软件演示视频：http://yyoutube.com/watch?v=x9NTDJqV2uk
 
 🚀 高效扫描：自动从 CloudFlare 官方 IP 段生成 IP 地址
 
