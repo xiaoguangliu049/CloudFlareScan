@@ -1,6 +1,5 @@
 import sys
 import random
-import threading
 import time
 import ipaddress
 import asyncio
@@ -14,11 +13,11 @@ import csv
 from PySide6.QtWidgets import (
     QApplication, QWidget, QLabel, QPushButton,
     QLineEdit, QProgressBar, QTableWidget, QTableWidgetItem,
-    QVBoxLayout, QHBoxLayout, QGridLayout, QHeaderView,
-    QTextEdit, QComboBox, QFileDialog
+    QVBoxLayout, QHBoxLayout, QHeaderView,
+    QTextEdit, QComboBox, QFileDialog, QMessageBox
 )
 from PySide6.QtCore import Qt, QThread, Signal, QTimer
-from PySide6.QtGui import QFont, QColor, QIcon
+from PySide6.QtGui import QFont, QColor, QIcon, QIntValidator
 import os
 import platform
 
@@ -133,7 +132,7 @@ AIRPORT_CODES = {
 PORT_OPTIONS = ["443", "2053", "2083", "2087", "2096", "8443"]
 
 def get_iata_code_from_ip(ip: str, timeout: int = 3) -> Optional[str]:
-    test_host = "speed.cloudflare.com"
+    test_host = "st.xiaolin666.de5.net"
     
     if ':' in ip:
         urls = [
@@ -282,15 +281,48 @@ def get_iata_translation(iata_code: str) -> str:
         return AIRPORT_CODES[iata_code]
     return iata_code
 
+async def async_tcp_ping(ip: str, port: int, timeout: float = 1.0) -> Optional[float]:
+    start_time = time.monotonic()
+    
+    try:
+        reader, writer = await asyncio.wait_for(
+            asyncio.open_connection(ip, port),
+            timeout=timeout
+        )
+        latency = (time.monotonic() - start_time) * 1000
+        writer.close()
+        await writer.wait_closed()
+        return round(latency, 2)
+    
+    except (asyncio.TimeoutError, ConnectionRefusedError, OSError, ConnectionError):
+        return None
+    except Exception:
+        return None
+
+async def measure_tcp_latency(ip: str, port: int, ping_times: int = 4, timeout: float = 1.0) -> Optional[float]:
+    latencies = []
+    
+    for i in range(ping_times):
+        latency = await async_tcp_ping(ip, port, timeout)
+        if latency is not None:
+            latencies.append(latency)
+        
+        if i < ping_times - 1:
+            await asyncio.sleep(0.05)
+    
+    if latencies:
+        return min(latencies)
+    else:
+        return None
+
 class IPv4Scanner:
-    def __init__(self, log_callback=None, progress_callback=None, result_callback=None, port=443):
+    def __init__(self, log_callback=None, progress_callback=None, port=443):
         self.max_workers = 200
-        self.timeout = 3
-        self.user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        self.timeout = 1.0
+        self.ping_times = 3
         self.running = True
         self.log_callback = log_callback
         self.progress_callback = progress_callback
-        self.result_callback = result_callback
         self.port = port
         
     def generate_ips_from_cidrs(self) -> List[str]:
@@ -303,8 +335,7 @@ class IPv4Scanner:
                     if subnet.num_addresses > 2:
                         hosts = list(subnet.hosts())
                         if hosts:
-                            sample_size = min(2, len(hosts))
-                            selected_ips = random.sample(hosts, sample_size)
+                            selected_ips = random.sample(hosts, 2)
                             for ip in selected_ips:
                                 ip_list.append(str(ip))
                             
@@ -319,20 +350,7 @@ class IPv4Scanner:
         if not self.running:
             return None
             
-        start_time = time.monotonic()
-        try:
-            reader, writer = await asyncio.wait_for(
-                asyncio.open_connection(ip, self.port),
-                timeout=self.timeout
-            )
-            latency = (time.monotonic() - start_time) * 500
-            writer.close()
-            await writer.wait_closed()
-            return round(latency, 2)
-        except (asyncio.TimeoutError, ConnectionRefusedError, OSError, ConnectionError):
-            return None
-        except Exception:
-            return None
+        return await measure_tcp_latency(ip, self.port, self.ping_times, self.timeout)
     
     async def test_single_ip(self, session: aiohttp.ClientSession, ip: str):
         if not self.running:
@@ -340,7 +358,7 @@ class IPv4Scanner:
         
         latency = await self.test_ip_latency(session, ip)
         
-        if latency is not None and latency < 1000:
+        if latency is not None and latency < 230:
             iata_code = None
             if self.running:
                 try:
@@ -358,7 +376,8 @@ class IPv4Scanner:
                 'success': True,
                 'ip_version': 4,
                 'scan_time': datetime.now().strftime("%H:%M:%S"),
-                'port': self.port
+                'port': self.port,
+                'ping_times': self.ping_times
             }
         else:
             return None
@@ -432,7 +451,7 @@ class IPv4Scanner:
             
             if self.log_callback:
                 self.log_callback(f"已生成 {len(ip_list)} 个随机IPv4 IP")
-                self.log_callback(f"开始测试 {len(ip_list)} 个IPv4 IP的延迟和地区码...")
+                self.log_callback(f"开始延迟测试 {len(ip_list)} 个IPv4 IP...")
             
             results = await self.batch_test_ips(ip_list)
             
@@ -452,13 +471,13 @@ class IPv4Scanner:
         self.running = False
 
 class IPv6Scanner:
-    def __init__(self, log_callback=None, progress_callback=None, result_callback=None, port=443):
+    def __init__(self, log_callback=None, progress_callback=None, port=443):
         self.max_workers = 200
-        self.timeout = 3
+        self.timeout = 1.0
+        self.ping_times = 2
         self.running = True
         self.log_callback = log_callback
         self.progress_callback = progress_callback
-        self.result_callback = result_callback
         self.port = port
         
     def generate_ips_from_cidrs(self) -> List[str]:
@@ -492,20 +511,7 @@ class IPv6Scanner:
         if not self.running:
             return None
             
-        start_time = time.monotonic()
-        try:
-            reader, writer = await asyncio.wait_for(
-                asyncio.open_connection(ip, self.port),
-                timeout=self.timeout
-            )
-            latency = (time.monotonic() - start_time) * 1500
-            writer.close()
-            await writer.wait_closed()
-            return round(latency, 2)
-        except (asyncio.TimeoutError, ConnectionRefusedError, OSError, ConnectionError):
-            return None
-        except Exception:
-            return None
+        return await measure_tcp_latency(ip, self.port, self.ping_times, self.timeout)
     
     async def test_single_ip(self, session: aiohttp.ClientSession, ip: str):
         if not self.running:
@@ -513,7 +519,7 @@ class IPv6Scanner:
         
         latency = await self.test_ip_latency(session, ip)
         
-        if latency is not None and latency < 5000:
+        if latency is not None and latency < 320:
             iata_code = None
             if self.running:
                 try:
@@ -531,7 +537,8 @@ class IPv6Scanner:
                 'success': True,
                 'ip_version': 6,
                 'scan_time': datetime.now().strftime("%H:%M:%S"),
-                'port': self.port
+                'port': self.port,
+                'ping_times': self.ping_times
             }
         else:
             return None
@@ -609,7 +616,7 @@ class IPv6Scanner:
             
             if self.log_callback:
                 self.log_callback(f"已生成 {len(ip_list)} 个随机IPv6 IP")
-                self.log_callback(f"开始测试 {len(ip_list)} 个IPv6 IP的延迟和地区码...")
+                self.log_callback(f"开始延迟测试 {len(ip_list)} 个IPv6 IP...")
                 self.log_callback("注意: IPv6扫描可能需要更多时间，请耐心等待...")
             
             results = await self.batch_test_ips(ip_list)
@@ -639,10 +646,11 @@ class SpeedTestWorker(QThread):
     status_message = Signal(str)
     speed_test_completed = Signal(list)
     
-    def __init__(self, results: List[Dict], region_code: str = None, current_port=443):
+    def __init__(self, results: List[Dict], region_code: str = None, max_test_count=10, current_port=443):
         super().__init__()
         self.results = results
         self.region_code = region_code.upper() if region_code else None
+        self.max_test_count = max_test_count
         self.download_interval = 3
         self.download_time_limit = 3
         self.test_host = "speed.cloudflare.com"
@@ -721,10 +729,10 @@ class SpeedTestWorker(QThread):
                 return
             
             filtered_results.sort(key=lambda x: x.get('latency', float('inf')))
-            target_ips = filtered_results[:min(10, len(filtered_results))]
+            target_ips = filtered_results[:min(self.max_test_count, len(filtered_results))]
             
             test_type = "地区测速" if self.region_code else "完全测速"
-            self.status_message.emit(f"{test_type}：将对 {len(target_ips)} 个IP进行测速")
+            self.status_message.emit(f"{test_type}：将对 {len(target_ips)} 个IP进行测速 (最大测速数: {self.max_test_count})")
             
             speed_results = []
             
@@ -735,7 +743,7 @@ class SpeedTestWorker(QThread):
                 ip = ip_info['ip']
                 latency = ip_info.get('latency', 0)
                 
-                self.status_message.emit(f"[{i+1}/{len(target_ips)}] 正在测速 {ip} (延迟: {latency}ms) (端口: {self.current_port})")
+                self.status_message.emit(f"[{i+1}/{len(target_ips)}] 正在测速 {ip}(端口: {self.current_port})")
                 self.progress_update.emit(i+1, len(target_ips), 0)
                 
                 download_speed = self.download_speed(ip, self.current_port)
@@ -797,7 +805,6 @@ class IPv4ScanWorker(QThread):
         self.scanner = IPv4Scanner(
             log_callback=lambda msg: self.status_message.emit(msg),
             progress_callback=lambda c, t, s, sp: self.progress_update.emit(c, t, s, sp),
-            result_callback=None,
             port=self.port
         )
         
@@ -832,7 +839,6 @@ class IPv6ScanWorker(QThread):
         self.scanner = IPv6Scanner(
             log_callback=lambda msg: self.status_message.emit(msg),
             progress_callback=lambda c, t, s, sp: self.progress_update.emit(c, t, s, sp),
-            result_callback=None,
             port=self.port
         )
         
@@ -853,7 +859,7 @@ class IPv6ScanWorker(QThread):
 class CloudflareScanUI(QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("CloudFlare Scan - 小琳解说 v2.0")
+        self.setWindowTitle("CloudFlare Scan - 小琳解说 V3.0")
         
         self.resize(450, 800)
         self.setMinimumSize(430, 600)
@@ -987,19 +993,59 @@ class CloudflareScanUI(QWidget):
 
         row1 = QHBoxLayout()
         row1.setSpacing(SPACING)
-        row1.setAlignment(Qt.AlignCenter)
-
+        
+        row1.addStretch()
+        
         self.btn_ipv4 = self.make_btn("IPv4 扫描", "#3B82F6")
         self.btn_ipv4.clicked.connect(self.start_ipv4_scan)
+        row1.addWidget(self.btn_ipv4)
+        
+        row1.addSpacing(SPACING)
         
         self.btn_ipv6 = self.make_btn("IPv6 扫描", "#22C55E", enabled=True)
         self.btn_ipv6.clicked.connect(self.start_ipv6_scan)
+        row1.addWidget(self.btn_ipv6)
+        
+        row1.addSpacing(SPACING)
+        
+        self.btn_stop = self.make_stop_btn("停止任务", enabled=False)
+        self.btn_stop.clicked.connect(self.confirm_stop_all_tasks)  # 修改为确认停止
+        row1.addWidget(self.btn_stop)
+        
+        row1.addStretch()
+
+        row2 = QHBoxLayout()
+        row2.setSpacing(SPACING)
+        
+        row2.addStretch()
+        
+        self.btn_area = self.make_btn("地区测速", "#EC4899", enabled=False)
+        self.btn_area.clicked.connect(self.start_region_speed_test)
+        row2.addWidget(self.btn_area)
+        
+        row2.addSpacing(SPACING)
+        
+        self.btn_full = self.make_btn("完全测速", "#F97316", enabled=False)
+        self.btn_full.clicked.connect(self.start_full_speed_test)
+        row2.addWidget(self.btn_full)
+        
+        row2.addSpacing(SPACING)
+        
+        self.btn_export = self.make_btn("导出结果", "#8B5CF6", enabled=False)
+        self.btn_export.clicked.connect(self.export_results)
+        row2.addWidget(self.btn_export)
+        
+        row2.addStretch()
+
+        row3 = QHBoxLayout()
+        row3.setSpacing(SPACING)
+        
+        row3.addStretch()
         
         self.input_region = QLineEdit()
         self.input_region.setFixedSize(BTN_W, BTN_H)
         self.input_region.setFont(FONT_BTN)
         self.input_region.setPlaceholderText("输入地区码")
-
         self.input_region.setStyleSheet(f"""
             QLineEdit {{
                 background: white;
@@ -1007,59 +1053,109 @@ class CloudflareScanUI(QWidget):
                 border-radius: 6px;
                 padding-left: 8px;
                 font-family: "{SYSTEM_FONT}";
+                color: #111827;
             }}
             QLineEdit:focus {{
                 border-color: #F97316;
             }}
         """)
         self.input_region.textChanged.connect(self.auto_uppercase)
-
-        row1.addWidget(self.btn_ipv4)
-        row1.addWidget(self.btn_ipv6)
-        row1.addWidget(self.input_region)
-
-        row2 = QHBoxLayout()
-        row2.setSpacing(SPACING)
-        row2.setAlignment(Qt.AlignCenter)
-
-        self.btn_stop = self.make_stop_btn("停止任务", enabled=False)
-        self.btn_stop.clicked.connect(self.stop_all_tasks)
-
-        self.btn_full = self.make_btn("完全测速", "#F97316", enabled=False)
-        self.btn_full.clicked.connect(self.start_full_speed_test)
         
-        self.btn_area = self.make_btn("地区测速", "#EC4899", enabled=False)
-        self.btn_area.clicked.connect(self.start_region_speed_test)
-
-        row2.addWidget(self.btn_stop)
-        row2.addWidget(self.btn_full)
-        row2.addWidget(self.btn_area)
-
-        row3 = QHBoxLayout()
-        row3.setSpacing(SPACING)
-        row3.setAlignment(Qt.AlignCenter)
+        row3.addWidget(self.input_region)
         
-        port_label = QLabel("扫描端口:")
-        port_label.setFont(FONT_BTN)
-
-        port_label.setStyleSheet(f"""
-            color: #111827; 
-            font-family: "{SYSTEM_FONT}";
+        row3.addSpacing(SPACING)
+        
+        speed_count_container = QWidget()
+        speed_count_container.setFixedSize(BTN_W, BTN_H)
+        speed_count_layout = QHBoxLayout(speed_count_container)
+        speed_count_layout.setContentsMargins(0, 0, 0, 0)
+        speed_count_layout.setSpacing(5)
+        
+        speed_count_label = QLabel("测速数量:")
+        speed_count_label.setFont(FONT_BTN)
+        speed_count_label.setStyleSheet(f"""
+            QLabel {{
+                color: #111827;
+                font-family: "{SYSTEM_FONT}";
+            }}
         """)
-        row3.addWidget(port_label)
+        speed_count_layout.addWidget(speed_count_label)
+        
+        self.input_speed_count = QLineEdit()
+        self.input_speed_count.setFixedHeight(BTN_H)
+        self.input_speed_count.setFont(FONT_BTN)
+        self.input_speed_count.setText("10")
+        self.input_speed_count.setStyleSheet(f"""
+            QLineEdit {{
+                background: white;
+                border: 1px solid #D1D5DB;
+                border-radius: 6px;
+                padding: 0px 5px;
+                font-family: "{SYSTEM_FONT}";
+                color: #111827;
+            }}
+            QLineEdit:focus {{
+                border-color: #F97316;
+            }}
+        """)
+        validator = QIntValidator(1, 50, self)
+        self.input_speed_count.setValidator(validator)
+        
+        speed_count_layout.addWidget(self.input_speed_count, 1)
+        
+        row3.addWidget(speed_count_container)
+        
+        row3.addSpacing(SPACING)
+        
+        port_container = QWidget()
+        port_container.setFixedSize(BTN_W, BTN_H)
+        port_layout = QHBoxLayout(port_container)
+        port_layout.setContentsMargins(0, 0, 0, 0)
+        port_layout.setSpacing(5)
+        
+        port_label = QLabel("端口:")
+        port_label.setFont(FONT_BTN)
+        port_label.setStyleSheet(f"""
+            QLabel {{
+                color: #111827;
+                font-family: "{SYSTEM_FONT}";
+            }}
+        """)
+        port_layout.addWidget(port_label)
         
         self.combo_port = QComboBox()
-        self.combo_port.setFixedSize(100, BTN_H)
-        self.combo_port.addItems(PORT_OPTIONS)
-        self.combo_port.setCurrentText("443")
+        self.combo_port.setFixedHeight(BTN_H)
         self.combo_port.setFont(FONT_BTN)
-        row3.addWidget(self.combo_port)
+        for port in PORT_OPTIONS:
+            self.combo_port.addItem(port)
+        self.combo_port.setCurrentText("443")
+        self.combo_port.setStyleSheet(f"""
+            QComboBox {{
+                background: white;
+                border: 1px solid #D1D5DB;
+                border-radius: 6px;
+                padding: 0px 5px;
+                font-family: "{SYSTEM_FONT}";
+                color: #111827;
+            }}
+            QComboBox:focus {{
+                border-color: #F97316;
+            }}
+            QComboBox::drop-down {{
+                subcontrol-origin: padding;
+                subcontrol-position: top right;
+                width: 20px;
+                border: none;
+                border-top-right-radius: 5px;
+                border-bottom-right-radius: 5px;
+            }}
+        """)
         
-        row3.addSpacing(20)
+        port_layout.addWidget(self.combo_port, 1)
         
-        self.btn_export = self.make_btn("导出结果", "#8B5CF6", enabled=False)
-        self.btn_export.clicked.connect(self.export_results)
-        row3.addWidget(self.btn_export)
+        row3.addWidget(port_container)
+        
+        row3.addStretch()
 
         control.addLayout(row1)
         control.addLayout(row2)
@@ -1221,6 +1317,26 @@ class CloudflareScanUI(QWidget):
         if text != text.upper():
             self.input_region.setText(text.upper())
     
+    def confirm_stop_all_tasks(self):
+        """确认停止所有任务"""
+        if not self.scanning and not self.speed_testing:
+            return
+        
+        # 创建确认对话框
+        reply = QMessageBox.question(
+            self, 
+            '确认停止', 
+            '确定要停止当前任务吗？',
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No  # 默认选择否，避免误操作
+        )
+        
+        if reply == QMessageBox.Yes:
+            self.stop_all_tasks()
+        else:
+            # 用户取消，不做任何操作
+            pass
+    
     def start_ipv4_scan(self):
         if self.scanning or self.speed_testing:
             return
@@ -1239,7 +1355,6 @@ class CloudflareScanUI(QWidget):
         self.speed_label.setText("速度: 0 IP/秒")
         
         port = int(self.combo_port.currentText())
-        # 记录当前扫描端口
         self.current_scan_port = port
         
         self.ipv4_scan_worker = IPv4ScanWorker(port=port)
@@ -1302,6 +1417,20 @@ class CloudflareScanUI(QWidget):
             self.status_display.append("错误：请先运行扫描获取IP列表！")
             return
         
+        speed_count_text = self.input_speed_count.text().strip()
+        if not speed_count_text:
+            self.status_display.append("错误：请输入测速数量！")
+            return
+        
+        try:
+            speed_count = int(speed_count_text)
+            if speed_count < 1 or speed_count > 50:
+                self.status_display.append("错误：测速数量必须在1-50之间！")
+                return
+        except ValueError:
+            self.status_display.append("错误：测速数量必须是数字！")
+            return
+        
         self.speed_testing = True
         self.update_ui_state(task_started=True)
         
@@ -1312,7 +1441,7 @@ class CloudflareScanUI(QWidget):
         self.status_label.setText("完全测速中...")
         self.speed_label.setText("测速进度: 0/5")
         
-        self.speed_test_worker = SpeedTestWorker(self.scan_results, current_port=self.current_scan_port)
+        self.speed_test_worker = SpeedTestWorker(self.scan_results, max_test_count=speed_count, current_port=self.current_scan_port)
         self.speed_test_worker.progress_update.connect(self.update_speed_test_progress)
         self.speed_test_worker.status_message.connect(self.update_status_message)
         self.speed_test_worker.speed_test_completed.connect(self.speed_test_finished)
@@ -1333,6 +1462,20 @@ class CloudflareScanUI(QWidget):
             self.status_display.append("错误：请输入地区码（如SJC、SIN等）")
             return
         
+        speed_count_text = self.input_speed_count.text().strip()
+        if not speed_count_text:
+            self.status_display.append("错误：请输入测速数量！")
+            return
+        
+        try:
+            speed_count = int(speed_count_text)
+            if speed_count < 1 or speed_count > 50:
+                self.status_display.append("错误：测速数量必须在1-50之间！")
+                return
+        except ValueError:
+            self.status_display.append("错误：测速数量必须是数字！")
+            return
+        
         if region_code not in AIRPORT_CODES:
             self.status_display.append(f"警告：地区码 {region_code} 不在已知列表中，将继续尝试测速")
         
@@ -1346,7 +1489,7 @@ class CloudflareScanUI(QWidget):
         self.status_label.setText(f"{region_code}地区测速中...")
         self.speed_label.setText("测速进度: 0/5")
         
-        self.speed_test_worker = SpeedTestWorker(self.scan_results, region_code, current_port=self.current_scan_port)
+        self.speed_test_worker = SpeedTestWorker(self.scan_results, region_code, max_test_count=speed_count, current_port=self.current_scan_port)
         self.speed_test_worker.progress_update.connect(self.update_speed_test_progress)
         self.speed_test_worker.status_message.connect(self.update_status_message)
         self.speed_test_worker.speed_test_completed.connect(self.speed_test_finished)
@@ -1372,7 +1515,7 @@ class CloudflareScanUI(QWidget):
         
         try:
             with open(file_name, 'w', newline='', encoding='utf-8-sig') as csvfile:
-                fieldnames = ['排名', 'IP地址', '地区码', '地区', '延迟', '下载速度', '端口', '测速类型']
+                fieldnames = ['排名', 'IP地址', '地区码', '地区', '延迟(ms)', '下载速度(MB/s)', '端口', '测速类型']
                 writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
                 
                 writer.writeheader()
@@ -1383,8 +1526,8 @@ class CloudflareScanUI(QWidget):
                         'IP地址': result['ip'],
                         '地区码': result['iata_code'],
                         '地区': result['chinese_name'],
-                        '延迟': f"{result['latency']:.2f}",
-                        '下载速度': f"{result['download_speed']:.2f}",
+                        '延迟(ms)': f"{result['latency']:.2f}",
+                        '下载速度(MB/s)': f"{result['download_speed']:.2f}",
                         '端口': result.get('port', 443),
                         '测速类型': result.get('test_type', '未知')
                     })
@@ -1450,12 +1593,14 @@ class CloudflareScanUI(QWidget):
             self.btn_full.setEnabled(False)
             self.btn_area.setEnabled(False)
             self.btn_export.setEnabled(False)
-            self.combo_port.setEnabled(False)
+            self.input_region.setEnabled(False)
+            self.input_speed_count.setEnabled(False)
         else:
             self.btn_stop.setEnabled(False)
             self.btn_ipv4.setEnabled(True)
             self.btn_ipv6.setEnabled(True)
-            self.combo_port.setEnabled(True)
+            self.input_region.setEnabled(True)
+            self.input_speed_count.setEnabled(True)
             if self.scan_results:
                 self.btn_full.setEnabled(True)
                 self.btn_area.setEnabled(True)
@@ -1609,7 +1754,6 @@ def find_icon_file():
         icon_path = os.path.join(base_dir, "cfs.ico")
         if os.path.exists(icon_path):
             return icon_path
-        # 尝试.icns
         if platform.system() == "Darwin":
             icon_path_icns = os.path.join(base_dir, "cfs.icns")
             if os.path.exists(icon_path_icns):
@@ -1620,7 +1764,6 @@ def find_icon_file():
         icon_path = os.path.join(base_dir, "cfs.ico")
         if os.path.exists(icon_path):
             return icon_path
-        # 尝试.icns
         if platform.system() == "Darwin":
             icon_path_icns = os.path.join(base_dir, "cfs.icns")
             if os.path.exists(icon_path_icns):
@@ -1629,9 +1772,7 @@ def find_icon_file():
     return None
 
 if __name__ == "__main__":
-    # 修改：设置macOS特定的属性
     if platform.system() == "Darwin":
-        # macOS特定的设置
         os.environ['QT_MAC_WANTS_LAYER'] = '1'
     
     app = QApplication(sys.argv)
